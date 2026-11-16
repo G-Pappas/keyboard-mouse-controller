@@ -42,7 +42,9 @@ git clone https://github.com/G-Pappas/keyboard-mouse-controller ~/.config/omarch
 omarchy plugin enable gpappas.keymouse
 ```
 
-Enabling runs `setup.sh` once. It backs up `~/.config/hypr/bindings.lua` to `bindings.lua.bak.<timestamp>`, appends a short guarded block that loads `keymouse.lua`, and reloads Hyprland. It is safe to run again, and the block does nothing if the plugin is removed.
+Enabling the plugin does not change any of your files. The first time it loads, a notification asks whether to add SUPER + N to your Hyprland config. Accept it, or run `~/.config/omarchy/plugins/gpappas.keymouse/setup.sh apply` yourself later. The notification is shown only once.
+
+Applying backs up `~/.config/hypr/bindings.lua` to `bindings.lua.bak.<timestamp>`, appends a short guarded block that loads `keymouse.lua`, and reloads Hyprland. It is safe to run again, and the block does nothing if the plugin is removed.
 
 SUPER + N must be unbound in your config.
 

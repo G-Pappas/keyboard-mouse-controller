@@ -2,8 +2,8 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Hooks keymouse.lua into the Hyprland config the first time the plugin loads
-// (setup.sh does nothing on later loads), so installing the plugin is enough.
+// Asks (once, by notification) before hooking keymouse.lua into the Hyprland
+// config. Nothing is changed unless the user accepts or runs setup.sh apply.
 Item {
   id: root
 
