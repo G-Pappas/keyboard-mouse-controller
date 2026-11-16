@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Virtual mouse buttons for the Hyprland keyboard-mouse mode.
+
+Hyprland can move the pointer by itself but has no way to click, so this
+keeps a virtual pointer open (wlr-virtual-pointer protocol: no root, no
+kernel module, standard library only) and presses its buttons on request.
+Requests are single words written to $XDG_RUNTIME_DIR/keymouse.fifo:
+
+    click | rclick | down | up | wiggle | quit
+    scroll-up | scroll-down | scroll-left | scroll-right   (optionally :N notches)
+
+Started by keymouse.lua when the mode is entered.
+"""
+import fcntl
+import os
+import select
+import socket
+import stat
+import struct
+import sys
+import time
+
+runtime = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+fifo_path = os.path.join(runtime, "keymouse.fifo")
+
+# One instance only.
+lock = open(os.path.join(runtime, "keymouse.lock"), "w")
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    sys.exit(0)
+
+if os.path.exists(fifo_path) and not stat.S_ISFIFO(os.stat(fifo_path).st_mode):
+    os.remove(fifo_path)
+if not os.path.exists(fifo_path):
+    os.mkfifo(fifo_path, 0o600)
+
+BTN_LEFT, BTN_RIGHT = 0x110, 0x111
+AXIS_VERTICAL, AXIS_HORIZONTAL = 0, 1
+NOTCH = 15.0  # pixels of scroll a wheel notch stands for
+
+
+class Wayland:
+    """Just enough of the Wayland wire protocol to drive a virtual pointer."""
+
+    def __init__(self):
+        name = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+        path = name if name.startswith("/") else os.path.join(runtime, name)
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(path)
+        self.last_id = 1  # object 1 is wl_display
+        self.inbox = b""
+        self.globals = {}
+
+        registry = self.new_id()
+        self.send(1, 1, registry)  # wl_display.get_registry
+        self.roundtrip()
+        if "zwlr_virtual_pointer_manager_v1" not in self.globals:
+            raise SystemExit("compositor has no virtual pointer support")
+        name, version = self.globals["zwlr_virtual_pointer_manager_v1"]
+        manager = self.new_id()
+        self.send(registry, 0, name, "zwlr_virtual_pointer_manager_v1", min(version, 2), manager)
+        self.pointer = self.new_id()
+        self.send(manager, 0, 0, self.pointer)  # create_virtual_pointer, default seat
+        self.roundtrip()
+
+    def new_id(self):
+        self.last_id += 1
+        return self.last_id
+
+    def send(self, obj, opcode, *args):
+        body = b""
+        for arg in args:
+            if isinstance(arg, str):
+                raw = arg.encode() + b"\0"
+                body += struct.pack("=I", len(raw)) + raw + b"\0" * (-len(raw) % 4)
+            elif isinstance(arg, float):  # wl_fixed: 24.8 fixed point
+                body += struct.pack("=i", int(round(arg * 256)))
+            elif arg < 0:
+                body += struct.pack("=i", arg)
+            else:
+                body += struct.pack("=I", arg)
+        self.sock.sendall(struct.pack("=II", obj, ((8 + len(body)) << 16) | opcode) + body)
+
+    def read(self, wait):
+        """Returns the events that have arrived as (object, opcode, payload)."""
+        if not select.select([self.sock], [], [], wait)[0]:
+            return []
+        chunk = self.sock.recv(65536)
+        if not chunk:
+            raise SystemExit("compositor went away")
+        self.inbox += chunk
+        events = []
+        while len(self.inbox) >= 8:
+            obj, word = struct.unpack("=II", self.inbox[:8])
+            size, opcode = word >> 16, word & 0xFFFF
+            if len(self.inbox) < size:
+                break
+            events.append((obj, opcode, self.inbox[8:size]))
+            self.inbox = self.inbox[size:]
+        for obj, opcode, payload in events:
+            if obj == 1 and opcode == 0:  # wl_display.error
+                raise SystemExit("wayland error: " + repr(payload))
+            if opcode == 0 and obj == 2:  # wl_registry.global (registry is object 2)
+                name, length = struct.unpack("=II", payload[:8])
+                interface = payload[8:8 + length - 1].decode()
+                version = struct.unpack("=I", payload[8 + length + (-length % 4):][:4])[0]
+                self.globals[interface] = (name, version)
+        return events
+
+    def roundtrip(self):
+        callback = self.new_id()
+        self.send(1, 0, callback)  # wl_display.sync
+        while True:
+            for obj, opcode, _ in self.read(5):
+                if obj == callback:
+                    return
+
+    # The virtual pointer's requests. Every event is closed by a frame, which
+    # is what makes apps act on it.
+    def stamp(self):
+        return int(time.monotonic() * 1000) & 0xFFFFFFFF
+
+    def button(self, code, pressed):
+        self.send(self.pointer, 2, self.stamp(), code, 1 if pressed else 0)
+        self.send(self.pointer, 4)
+
+    def motion(self, dx, dy):
+        self.send(self.pointer, 0, self.stamp(), float(dx), float(dy))
+        self.send(self.pointer, 4)
+
+    def scroll(self, axis, notches):
+        self.send(self.pointer, 5, 0)  # axis_source: wheel
+        self.send(self.pointer, 7, self.stamp(), axis, NOTCH * notches, notches)
+        self.send(self.pointer, 4)
+
+
+wl = Wayland()
+held = False
+
+
+def left(down):
+    global held
+    if held != down:
+        wl.button(BTN_LEFT, down)
+        held = down
+
+
+def click(code):
+    left(False)
+    wl.button(code, True)
+    time.sleep(0.03)
+    wl.button(code, False)
+
+
+def wiggle():
+    # Real pointer motion, which un-hides a pointer hidden while typing and
+    # makes Hyprland focus the window under the pointer.
+    wl.motion(1, 0)
+    time.sleep(0.01)
+    wl.motion(-1, 0)
+
+
+# Wayland scrolls down with positive values.
+SCROLLS = {
+    "scroll-up": (AXIS_VERTICAL, -1),
+    "scroll-down": (AXIS_VERTICAL, 1),
+    "scroll-left": (AXIS_HORIZONTAL, -1),
+    "scroll-right": (AXIS_HORIZONTAL, 1),
+}
+
+
+def handle(cmd):
+    name, _, count = cmd.partition(":")
+    if name in SCROLLS:
+        axis, sign = SCROLLS[name]
+        wl.scroll(axis, sign * (int(count) if count.isdigit() else 1))
+    elif name == "click":
+        click(BTN_LEFT)
+    elif name == "rclick":
+        click(BTN_RIGHT)
+    elif name == "down":
+        left(True)
+    elif name == "up":
+        left(False)
+    elif name == "wiggle":
+        wiggle()
+    elif name == "quit":
+        raise SystemExit
+
+
+# While the button is held, the pointer is nudged out and back every few
+# milliseconds. Hyprland moves the pointer for the arrow keys without a real
+# device event, and some apps (GTK ones such as Ghostty) only redraw a drag
+# selection on one, so without this the selection would stay invisible until
+# the button is released.
+FLUSH_SECONDS = float(os.environ.get("KEYMOUSE_FLUSH", "0.03"))  # env override is for testing
+
+try:
+    # Opened read-write so the fifo never reports end-of-file between writers.
+    fd = os.open(fifo_path, os.O_RDWR)
+    pending = b""
+    wiggle()
+    while True:
+        ready, _, _ = select.select([fd, wl.sock], [], [], FLUSH_SECONDS if held else None)
+        if not ready:
+            wiggle()
+            continue
+        if wl.sock in ready:
+            wl.read(0)
+        if fd in ready:
+            pending += os.read(fd, 4096)
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                handle(line.decode(errors="replace").strip())
+finally:
+    try:
+        left(False)
+    except Exception:
+        pass

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "gpappas.keymouse",
+  "name": "Keyboard Mouse",
+  "version": "1.0.0",
+  "author": "gpappas",
+  "description": "Press SUPER+N and drive the mouse with the arrow keys: click, select, copy, paste and scroll without touching the mouse",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}
