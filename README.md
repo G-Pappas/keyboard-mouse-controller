@@ -46,6 +46,18 @@ Enabling runs `setup.sh` once. It backs up `~/.config/hypr/bindings.lua` to `bin
 
 SUPER + N must be unbound in your config.
 
+## Remove
+
+```
+omarchy plugin remove gpappas.keymouse
+```
+
+Then delete the block between `-- >>> gpappas.keymouse` and `-- <<< gpappas.keymouse` at the end of `~/.config/hypr/bindings.lua`, or restore a `bindings.lua.bak.<timestamp>` backup. Leaving the block in place is harmless.
+
+## Dependencies and license
+
+Python 3 (standard library only) and a compositor with the `wlr-virtual-pointer` protocol, which Hyprland provides. No sudo, no kernel module. MIT license, see `LICENSE`.
+
 ## How it works
 
 - `keymouse.lua` is a Hyprland submap named `keymouse`. A 16 ms timer moves the pointer while an arrow is held and polls Space and S.
