@@ -4,7 +4,8 @@
 Hyprland can move the pointer by itself but has no way to click, so this
 keeps a virtual pointer open (wlr-virtual-pointer protocol: no root, no
 kernel module, standard library only) and presses its buttons on request.
-Requests are single words written to $XDG_RUNTIME_DIR/keymouse.fifo:
+Requests are single words written to $XDG_RUNTIME_DIR/keymouse.fifo
+(the daemon refuses to run without a private runtime directory):
 
     click | rclick | down | up | wiggle | quit
     scroll-up | scroll-down | scroll-left | scroll-right   (optionally :N notches)
@@ -20,18 +21,32 @@ import struct
 import sys
 import time
 
-runtime = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+# The fifo accepts commands that become mouse input, so it lives only in the
+# user's private runtime directory. There is deliberately no /tmp fallback,
+# where another local user could plant a fifo of their own.
+runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+if not runtime or not os.path.isabs(runtime):
+    sys.exit("XDG_RUNTIME_DIR is not set; refusing to run without a private directory")
+dir_stat = os.stat(runtime)
+if dir_stat.st_uid != os.getuid() or dir_stat.st_mode & 0o077:
+    sys.exit(runtime + " is not private to this user; refusing to run")
 fifo_path = os.path.join(runtime, "keymouse.fifo")
 
 # One instance only.
-lock = open(os.path.join(runtime, "keymouse.lock"), "w")
+lock = os.fdopen(os.open(os.path.join(runtime, "keymouse.lock"),
+                         os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600), "w")
 try:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except OSError:
     sys.exit(0)
 
-if os.path.exists(fifo_path) and not stat.S_ISFIFO(os.stat(fifo_path).st_mode):
-    os.remove(fifo_path)
+# Reuse the fifo only if it is ours and private; otherwise replace it.
+try:
+    st = os.lstat(fifo_path)
+    if not (stat.S_ISFIFO(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077):
+        os.remove(fifo_path)
+except FileNotFoundError:
+    pass
 if not os.path.exists(fifo_path):
     os.mkfifo(fifo_path, 0o600)
 

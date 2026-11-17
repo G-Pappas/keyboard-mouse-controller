@@ -35,7 +35,8 @@ local FAST = 4 -- Ctrl multiplies the tap step and the glide speed by this
 local here = (debug.getinfo(1, "S").source or ""):match("^@(.*)/[^/]*$")
   or (os.getenv("HOME") .. "/.config/omarchy/plugins/gpappas.keymouse")
 local daemon = here .. "/keymouse-daemon"
-local fifo = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/keymouse.fifo"
+local runtime = os.getenv("XDG_RUNTIME_DIR")
+local fifo = (runtime and runtime ~= "" and runtime or "/nonexistent") .. "/keymouse.fifo"
 
 local HELP = "MOUSE MODE   Arrows move (Shift slow, Ctrl fast)   hold S + Arrows scroll   Enter click   hold Space select   C copy   V paste   Esc exit"
 local HELP_SELECTING = "SELECTING   Arrows extend   release Space to stop"
